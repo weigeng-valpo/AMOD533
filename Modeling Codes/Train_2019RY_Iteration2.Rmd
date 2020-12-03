@@ -1,0 +1,1306 @@
+---
+title: "Second Iteration-HRA Model Notebook"
+output: html_notebook
+---
+This is second iteration of the HRA model for scoring 2020 members. Load member file 
+```{r}
+HRA_2019 <- read.csv("//mbip/medicarepBI/Projects/COE/DSNP/Arthi/HRA/New HRA Data/mbr_hra_2019_final_for_model.csv")
+
+##Get members who are eligible for R in 2019 
+library(dplyr)
+R_2019 = filter(HRA_2019,R_eligible == 1)
+str(R_2019)
+R_2019$SRC_Member_ID = as.character(R_2019$SRC_Member_ID)
+```
+
+**Utilization variables**
+```{r}
+library(DBI)
+library(glue)
+conn <- dbConnect(odbc::odbc(), .connection_string = 'driver={db2};server=ewhprd.iwhouse.aetna.com;database=DEWHP000;trusted_connection=true')
+src_member_ids = R_2019$SRC_Member_ID
+str(src_member_ids)
+src_member_ids = as.character(src_member_ids)
+###Add 12 month LAB visits 
+LAB_VISITS = glue::glue_sql("select distinct m360.src_member_id, cl.srv_start_dt
+    from iwh.claim_line cl  
+    inner join STARSTEMP.STARS_ANALYTICS_MBR_360 m360 on m360.MEMBER_ID = cl.MEMBER_ID
+    inner join IWH.PROCEDURE ip on cl.PRCDR_CD = ip.PRCDR_CD
+    inner join IWH.PROCEDURE_GROUP ipg on ip.PRCDR_GROUP_NBR=ipg.PRCDR_GROUP_NBR
+    where cl.srv_start_dt between date('2018-01-01') and date('2018-12-31')  
+    and  cl.business_ln_cd = 'ME' 
+    and  cl.summarized_srv_ind = 'Y' 
+    and  cl.clm_ln_status_cd = 'P'
+    and lower(trim(IPG.SHORT_DSCRPTN)) like '%laboratory%' 
+    and src_member_id in ({airports*})", 
+                    airports = src_member_ids ,
+                    .con = conn
+)
+LAB_VISITS <- dbSendQuery(conn,LAB_VISITS)
+LAB_VISITS = dbFetch(LAB_VISITS)
+summary(LAB_VISITS)
+LAB_VISITS = LAB_VISITS %>% distinct(SRC_MEMBER_ID,SRV_START_DT, .keep_all = TRUE)
+LAB_VISITS_src = LAB_VISITS  %>% distinct(SRC_MEMBER_ID, .keep_all = TRUE)
+LAB_VISITS_aggregate = data.frame(table(LAB_VISITS$SRC_MEMBER_ID))
+  #$aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=LAB_VISITS, length)
+names(LAB_VISITS_aggregate)
+colnames(LAB_VISITS_aggregate) = c("SRC_MEMBER_ID","LAB VISITS_12 month")
+##2,327 members have lab visits 
+summary(LAB_VISITS_aggregate)
+names(R_2019)
+colnames(R_2019)[2] = "SRC_MEMBER_ID"
+Ag_data_19= merge(x = R_2019, y = LAB_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+
+```
+
+
+**DENIED CLAIMS**
+```{r}
+###12 month DND Claims 
+DND_CLAIMS = glue::glue_sql("select m360.SRC_MEMBER_ID,cl.src_clm_id
+    from iwh.claim_line cl 
+    inner join STARSTEMP.STARS_ANALYTICS_MBR_360 m360 on m360.MEMBER_ID = cl.MEMBER_ID
+    where cl.srv_start_dt between date('2018-01-01') and date('2018-12-31')  
+    and m360.mdcr_offer_typ_cd in ('MAPD', 'MA')
+    and cl.business_ln_cd = 'ME'
+    and cl.summarized_srv_ind='Y'
+    and cl.clm_ln_status_cd='D'
+    and src_member_id in ({airports*})", 
+                            airports = src_member_ids ,
+                            .con = conn
+)
+DND_CLAIMS <- dbSendQuery(conn,DND_CLAIMS)
+DND_CLAIMS = dbFetch(DND_CLAIMS)
+summary(DND_CLAIMS)
+
+###Aggregate and match with base dataset
+DND_CLAIMS = DND_CLAIMS %>% distinct(SRC_MEMBER_ID,SRC_CLM_ID, .keep_all = TRUE)
+#DND_CLAIMS_src = DND_CLAIMS  %>% distinct(SRC_MEMBER_ID, .keep_all = TRUE)
+DND_CLAIMS_aggregate = data.frame(table(DND_CLAIMS$SRC_MEMBER_ID))
+#aggregate(SRC_CLM_ID ~ SRC_MEMBER_ID, data=LAB_VISITS, length)
+names(DND_CLAIMS_aggregate)
+colnames(DND_CLAIMS_aggregate) = c("SRC_MEMBER_ID","DENIED_CLAIMS_12 month")
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = DND_CLAIMS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+**PAR CLAIMS**
+```{r}
+
+####12 month now 
+PAR_CLAIMS = glue::glue_sql("select m360.SRC_MEMBER_ID, cl.srv_start_dt, cl.src_clm_id 
+from starstemp.stars_analytics_mbr_360 m360
+inner join iwh.claim_line cl on m360.member_id=cl.member_id
+where cl.srv_start_dt between DATE('01/01/2018') and DATE('12/31/2018')
+and m360.mdcr_offer_typ_cd in ('MAPD', 'MA')
+and cl.business_ln_cd = 'ME'
+and cl.summarized_srv_ind='Y'
+and cl.paid_prvdr_par_cd='Y' 
+and cl.clm_ln_status_cd='P' 
+and src_member_id in ({airports*})", 
+                           airports = src_member_ids ,
+                           .con = conn
+)
+PAR_CLAIMS <- dbSendQuery(conn,PAR_CLAIMS)
+PAR_CLAIMS = dbFetch(PAR_CLAIMS)
+summary(PAR_CLAIMS)
+##Number of PAR CLAIMS 
+PAR_CLAIMS = PAR_CLAIMS %>% distinct(SRC_MEMBER_ID,SRV_START_DT,SRC_CLM_ID, .keep_all = TRUE)
+PAR_CLAIMS_src = PAR_CLAIMS  %>% distinct(SRC_MEMBER_ID, .keep_all = TRUE)
+PAR_CLAIMS_aggregate = aggregate(SRC_CLM_ID ~ SRC_MEMBER_ID, data=PAR_CLAIMS, length)
+PAR_VISITS_aggregate = aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=PAR_CLAIMS, length)
+names(PAR_CLAIMS_aggregate)
+colnames(PAR_CLAIMS_aggregate) = c("SRC_MEMBER_ID","PAR_CLAIMS_12 month")
+names(PAR_VISITS_aggregate)
+colnames(PAR_VISITS_aggregate) = c("SRC_MEMBER_ID","PAR_VISITS_12 month")
+##13,417members have lab visits 
+#Ag_data_19= merge(x = Ag_data_19, y = PAR_CLAIMS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+#Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+Ag_data_19= merge(x = Ag_data_19, y = PAR_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+
+```
+
+**NON-PAR CLAIMS**
+```{r}
+
+#----12 month
+NONPAR_CLAIMS = glue::glue_sql("select distinct(varchar(m360.SRC_MEMBER_ID)) SRC_MEMBER_ID,cl.srv_start_dt,cl.src_clm_id
+                           from STARSTEMP.STARS_ANALYTICS_MBR_360 m360
+                           inner join iwh.claim_line cl on m360.MEMBER_ID = cl.MEMBER_ID
+                           where cl.SRV_START_DT BETWEEN DATE('2018-01-01') and DATE('2018-12-31')  
+                           and cl.PAID_PRVDR_PAR_CD ='N'
+                           and cl.business_ln_cd = 'ME' 
+                           and cl.summarized_srv_ind='Y' 
+                           and cl.clm_ln_status_cd='P'
+                           and src_member_id in ({airports*})", 
+                            airports = src_member_ids ,
+                            .con = conn
+)
+NONPAR_CLAIMS <- dbSendQuery(conn,NONPAR_CLAIMS)
+NONPAR_CLAIMS = dbFetch(NONPAR_CLAIMS)
+summary(NONPAR_CLAIMS)
+
+##Aggregate and merge with base data
+##Number of PAR CLAIMS 
+NONPAR_CLAIMS = NONPAR_CLAIMS %>% distinct(SRC_MEMBER_ID,SRV_START_DT,SRC_CLM_ID, .keep_all = TRUE)
+NONPAR_CLAIMS_src = NONPAR_CLAIMS  %>% distinct(SRC_MEMBER_ID, .keep_all = TRUE)
+NONPAR_CLAIMS_aggregate = aggregate(SRC_CLM_ID ~ SRC_MEMBER_ID, data=NONPAR_CLAIMS, length)
+NONPAR_VISITS_aggregate = aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=NONPAR_CLAIMS, length)
+names(NONPAR_CLAIMS_aggregate)
+colnames(NONPAR_CLAIMS_aggregate) = c("SRC_MEMBER_ID","NONPAR_CLAIMS_12 month")
+names(NONPAR_VISITS_aggregate)
+colnames(NONPAR_VISITS_aggregate) = c("SRC_MEMBER_ID","NONPAR_VISITS_12 month")
+##13,417members have lab visits 
+#Ag_data_19= merge(x = Ag_data_19, y = NONPAR_CLAIMS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+#Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+Ag_data_19= merge(x = Ag_data_19, y = NONPAR_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+**DENTAL VISITS**
+```{r}
+#12 month ----
+DENTAL_VISITS = glue::glue_sql("select distinct m360.src_member_id, cl.srv_start_dt
+
+from iwh.claim_line cl 
+inner join STARSTEMP.STARS_ANALYTICS_MBR_360 m360 on m360.MEMBER_ID = cl.MEMBER_ID
+inner join IWH.PROCEDURE ip on cl.PRCDR_CD = ip.PRCDR_CD
+inner join IWH.PROCEDURE_GROUP ipg on ip.PRCDR_GROUP_NBR=ipg.PRCDR_GROUP_NBR
+where cl.srv_start_dt between date('2018-01-01') and date('2018-12-31')    
+and  cl.business_ln_cd = 'ME' 
+and  cl.summarized_srv_ind = 'Y' 
+and  cl.clm_ln_status_cd ='P'
+and lower(trim(IPG.SHORT_DSCRPTN)) like '%dental%'
+                           and src_member_id in ({airports*})", 
+                               airports = src_member_ids ,
+                               .con = conn
+)
+DENTAL_VISITS <- dbSendQuery(conn,DENTAL_VISITS)
+DENTAL_VISITS = dbFetch(DENTAL_VISITS)
+summary(DENTAL_VISITS)
+#80435917701
+DENTAL_VISITS = DENTAL_VISITS %>% distinct(SRC_MEMBER_ID,SRV_START_DT, .keep_all = TRUE)
+DENTAL_VISITS_aggregate = data.frame(table(DENTAL_VISITS$SRC_MEMBER_ID))
+  #aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=DENTAL_VISITS, length)
+names(DENTAL_VISITS_aggregate)
+colnames(DENTAL_VISITS_aggregate) = c("SRC_MEMBER_ID","DENTAL_VISITS_12 month")
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = DENTAL_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+**EMERGENCY VISITS**
+```{r}
+##12 months
+EMERGENCY_VISITS = glue::glue_sql("select distinct m360.src_member_id, cl.srv_start_dt
+    from starstemp.stars_analytics_mbr_360 m360
+    inner join iwh.claim_line cl on m360.member_id=cl.member_id
+    where cl.srv_start_dt between '01/01/2018' and '12/31/2018'
+    and (cl.hcfa_plc_srv_cd = '23' or cl.prcdr_cd in ('99281', '99282', '99283', '99284', '99285', 
+    '99288','G0380', 'G0381', 'G0382', 'G0383', 'G0384'))
+    and m360.mdcr_offer_typ_cd in ('MAPD', 'MA') 
+    and cl.business_ln_cd = 'ME'
+    and cl.summarized_srv_ind='Y'
+    and cl.clm_ln_status_cd='P' 
+                           and src_member_id in ({airports*})", 
+                               airports = src_member_ids ,
+                               .con = conn
+)
+EMERGENCY_VISITS <- dbSendQuery(conn,EMERGENCY_VISITS)
+EMERGENCY_VISITS = dbFetch(EMERGENCY_VISITS)
+summary(EMERGENCY_VISITS)
+#80435917701
+EMERGENCY_VISITS = EMERGENCY_VISITS %>% distinct(SRC_MEMBER_ID,SRV_START_DT, .keep_all = TRUE)
+EMERGENCY_VISITS_aggregate = data.frame(table(EMERGENCY_VISITS$SRC_MEMBER_ID))
+  #aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=EMERGENCY_VISITS, length)
+names(EMERGENCY_VISITS_aggregate)
+colnames(EMERGENCY_VISITS_aggregate) = c("SRC_MEMBER_ID","EMERGENCY_VISITS_12 month")
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = EMERGENCY_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+**PCP VISITS** 
+```{r}
+
+#12 month
+PCP_VISITS = glue::glue_sql("select distinct m360.src_member_id, cl.srv_start_dt
+    from starstemp.stars_analytics_mbr_360 m360
+    inner join iwh.claim_line cl on m360.member_id=cl.member_id
+    where cl.srv_start_dt between '01/01/2018' and '12/31/2018'
+    and (cl.src_prvdr_ty_cd in ('PP','OB') or cl.srv_spclty_ctg_cd in ('FP','I','P','OG'))
+    and m360.mdcr_offer_typ_cd in ('MAPD', 'MA')
+    and cl.business_ln_cd = 'ME'
+    and cl.summarized_srv_ind='Y'
+    and cl.clm_ln_status_cd='P'
+                           and src_member_id in ({airports*})", 
+                               airports = src_member_ids ,
+                               .con = conn
+)
+PCP_VISITS <- dbSendQuery(conn,PCP_VISITS)
+PCP_VISITS = dbFetch(PCP_VISITS)
+summary(PCP_VISITS)
+#80435917701
+PCP_VISITS = PCP_VISITS %>% distinct(SRC_MEMBER_ID,SRV_START_DT, .keep_all = TRUE)
+PCP_VISITS_aggregate = data.frame(table(PCP_VISITS$SRC_MEMBER_ID))
+  #aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=PCP_VISITS, length)
+names(PCP_VISITS_aggregate)
+colnames(PCP_VISITS_aggregate) = c("SRC_MEMBER_ID","PCP_VISITS_12 month")
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = PCP_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+
+
+```
+
+**SPECIALTY VISITS**
+```{r}
+###12 month 
+SPECIALTY_VISITS = glue::glue_sql("select m360.SRC_MEMBER_ID,cl.srv_start_dt
+    from starstemp.stars_analytics_mbr_360 m360
+    inner join iwh.claim_line cl on m360.member_id=cl.member_id
+    where cl.srv_start_dt between date('2018-01-01') and date('2018-12-31') 
+    and (cl.src_prvdr_ty_cd in ('SP', 'SG') or cl.srv_spclty_ctg_cd in ('A','C','D','E','G','H','II',
+    'MG','N','NE','NN','OP','PD','PY','RH', 'CS','DC','EN','NS','O','OR','OS','PS', 'S','U','VS', 'RO', 'VVDT', 
+    'VVMH', 'VVPD','VVRH', 'VRAD', 'WBHP', 'WDI', 'WRAD', 'WSD', 'WBHF', 'WSA', 'WOTF'))  
+    and m360.mdcr_offer_typ_cd in ('MAPD', 'MA')
+    and cl.business_ln_cd = 'ME'
+    and cl.summarized_srv_ind='Y' 
+    and cl.clm_ln_status_cd='P'
+                           and src_member_id in ({airports*})", 
+                               airports = src_member_ids ,
+                               .con = conn
+)
+SPECIALTY_VISITS <- dbSendQuery(conn,SPECIALTY_VISITS)
+SPECIALTY_VISITS = dbFetch(SPECIALTY_VISITS)
+summary(SPECIALTY_VISITS)
+#80435917701
+SPECIALTY_VISITS = SPECIALTY_VISITS %>% distinct(SRC_MEMBER_ID,SRV_START_DT, .keep_all = TRUE)
+SPECIALTY_VISITS_aggregate = data.frame(table(SPECIALTY_VISITS$SRC_MEMBER_ID))
+  #aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=SPECIALTY_VISITS, length)
+names(SPECIALTY_VISITS_aggregate)
+colnames(SPECIALTY_VISITS_aggregate) = c("SRC_MEMBER_ID","SPECIALTY_VISITS_12 month")
+summary(SPECIALTY_VISITS_aggregate)
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = SPECIALTY_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+
+```
+
+**AMBULANCE VISITS**
+```{r}
+
+#12 month
+AMBULANCE_VISITS = glue::glue_sql("select m360.SRC_MEMBER_ID,cl.srv_start_dt
+    from starstemp.stars_analytics_mbr_360 m360
+    inner join iwh.claim_line cl on m360.member_id=cl.member_id
+    where cl.srv_start_dt between date('2018-01-01') and date('2018-12-31') 
+    and (cl.hcfa_plc_srv_cd in ('41', '42') or cl.prcdr_cd in ('A0425', 'A0426', 'A0427', 'A0428', 'A0429',
+    'A0432','A0433', 'A0434'))  
+    and m360.mdcr_offer_typ_cd in ('MAPD', 'MA')
+    and cl.business_ln_cd = 'ME'
+    and cl.summarized_srv_ind='Y' 
+    and cl.clm_ln_status_cd='P'
+                           and src_member_id in ({airports*})", 
+                               airports = src_member_ids ,
+                               .con = conn
+)
+AMBULANCE_VISITS <- dbSendQuery(conn,AMBULANCE_VISITS)
+AMBULANCE_VISITS = dbFetch(AMBULANCE_VISITS)
+summary(AMBULANCE_VISITS)    
+
+AMBULANCE_VISITS = AMBULANCE_VISITS %>% distinct(SRC_MEMBER_ID,SRV_START_DT, .keep_all = TRUE)
+AMBULANCE_VISITS_aggregate = data.frame(table(AMBULANCE_VISITS$SRC_MEMBER_ID))
+#aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=AMBULANCE_VISITS, length)
+names(AMBULANCE_VISITS_aggregate)
+colnames(AMBULANCE_VISITS_aggregate) = c("SRC_MEMBER_ID","AMBULANCE_VISITS_12 month")
+summary(AMBULANCE_VISITS_aggregate)
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = AMBULANCE_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+**BEHAVIORAL HEALTH**
+```{r}
+
+##12 month
+BEHAVIORAL_VISITS = glue::glue_sql("select m360.SRC_MEMBER_ID,cl.srv_start_dt
+    from starstemp.stars_analytics_mbr_360 m360
+    inner join iwh.claim_line cl on m360.member_id=cl.member_id
+    where cl.srv_start_dt between date('2018-01-01') and date('2018-12-31') 
+    and (cl.SRV_LINE_TYPE_CD='BH' or cl.src_prvdr_ty_cd in ('ABA', 'BAA',  'BHG', 'BHR', 'CP', 'DAC', 'MH', 'MR',
+    'NPB', 'PAB', 'PE', 'PN', 'PSH', 'SA') or cl.srv_spclty_ctg_cd in ('WBHP', 'WBHF', 'WSA', 'PY', 'VVMH')) 
+    and m360.mdcr_offer_typ_cd in ('MAPD', 'MA')
+    and cl.business_ln_cd = 'ME'
+    and cl.summarized_srv_ind='Y' 
+    and cl.clm_ln_status_cd='P' 
+                           and src_member_id in ({airports*})", 
+                                  airports = src_member_ids ,
+                                  .con = conn
+)
+BEHAVIORAL_VISITS <- dbSendQuery(conn,BEHAVIORAL_VISITS)
+BEHAVIORAL_VISITS = dbFetch(BEHAVIORAL_VISITS)
+summary(BEHAVIORAL_VISITS)    
+
+BEHAVIORAL_VISITS = BEHAVIORAL_VISITS %>% distinct(SRC_MEMBER_ID,SRV_START_DT, .keep_all = TRUE)
+BEHAVIORAL_VISITS_aggregate = data.frame(table(BEHAVIORAL_VISITS$SRC_MEMBER_ID))
+#aggregate(SRV_START_DT ~ SRC_MEMBER_ID, data=BEHAVIORAL_VISITS, length)
+names(BEHAVIORAL_VISITS_aggregate)
+colnames(BEHAVIORAL_VISITS_aggregate) = c("SRC_MEMBER_ID","BEHAVIORAL_VISITS_12 month")
+summary(BEHAVIORAL_VISITS_aggregate)
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = BEHAVIORAL_VISITS_aggregate, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+**AETNA PAID**
+```{r}
+##12 month 
+AETNA_PAID_AMT = glue::glue_sql("select varchar(m360.SRC_MEMBER_ID) as SRC_MEMBER_ID,
+    cl.srv_start_dt, sum(cl.paid_amt) as Aetna_Med_Paid_AMT
+    from STARSTEMP.STARS_ANALYTICS_MBR_360 m360
+    inner join iwh.claim_line cl on m360.MEMBER_ID = cl.MEMBER_ID
+    where cl.SRV_START_DT BETWEEN DATE('2018-01-01') and DATE('2018-12-31')  
+    and cl.clm_ln_status_cd = 'P' 
+    and cl.business_ln_cd = 'ME' 
+    and cl.summarized_srv_ind='Y'
+                           and src_member_id in ({airports*})
+                                group by varchar(m360.SRC_MEMBER_ID), cl.srv_start_dt", 
+                                  airports = src_member_ids ,
+                                  .con = conn)
+AETNA_PAID_AMT <- dbSendQuery(conn,AETNA_PAID_AMT)
+AETNA_PAID_AMT = dbFetch(AETNA_PAID_AMT)
+summary(AETNA_PAID_AMT)    
+str(AETNA_PAID_AMT)
+AETNA_PAID_AMT = AETNA_PAID_AMT %>% distinct(SRC_MEMBER_ID,SRV_START_DT,AETNA_MED_PAID_AMT, .keep_all = TRUE)
+AETNA_PAID_AMT_aggregate = data.frame(table(AETNA_PAID_AMT$SRC_MEMBER_ID))
+aet = aggregate(AETNA_MED_PAID_AMT ~ SRC_MEMBER_ID, data=AETNA_PAID_AMT, sum)
+names(aet)
+colnames(aet)[2] = "AETNA_MED_PAID_AMT_12months"
+Ag_data_19= merge(x = Ag_data_19, y = aet, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+**MBR PAID AMT**
+```{r}
+##12 MONTH 
+MBR_PAID_AMT = glue::glue_sql("select varchar(m360.SRC_MEMBER_ID) as SRC_MEMBER_ID,
+    cl.srv_start_dt, sum(cl.srv_copay_amt + cl.coinsurance_amt + cl.deductible_amt) as Mbr_Med_paid_amt
+    from STARSTEMP.STARS_ANALYTICS_MBR_360 m360
+    inner join iwh.claim_line cl on m360.MEMBER_ID = cl.MEMBER_ID
+    where cl.SRV_START_DT BETWEEN DATE('2018-01-01') and DATE('2018-12-31')  
+    and cl.clm_ln_status_cd = 'P' 
+    and cl.business_ln_cd = 'ME' 
+    and cl.summarized_srv_ind='Y'
+                           and src_member_id in ({airports*})
+                                 group by varchar(m360.SRC_MEMBER_ID), cl.srv_start_dt", 
+                                  airports = src_member_ids ,
+                                  .con = conn)
+MBR_PAID_AMT <- dbSendQuery(conn,MBR_PAID_AMT)
+MBR_PAID_AMT = dbFetch(MBR_PAID_AMT)
+summary(MBR_PAID_AMT)    
+str(MBR_PAID_AMT)
+MBR_PAID_AMT = MBR_PAID_AMT %>% distinct(SRC_MEMBER_ID,SRV_START_DT,MBR_MED_PAID_AMT, .keep_all = TRUE)
+MBR_PAID_AMT_aggregate = data.frame(table(MBR_PAID_AMT$SRC_MEMBER_ID))
+aet = aggregate(MBR_MED_PAID_AMT ~ SRC_MEMBER_ID, data=MBR_PAID_AMT, sum)
+names(aet)
+colnames(aet)[2] = "MBR_MED_PAID_AMT_12months"
+Ag_data_19= merge(x = Ag_data_19, y = aet, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+**CTMs and Greivances**
+```{r}
+##12 MONTH 
+CTM = glue::glue_sql("select distinct SASTEMP.CHARMEMB(A.MEMBER_ID) AS MEMBER_ID,a.*
+from STARSTEMP.MSORA_MEDHOK_CTM a 
+where 
+(substr(cms_cntrct_nbr,1,1)) <> 'S'
+and (filed_by <> 'Provider' or filed_by is null)
+and status_reason not in ('CMS Removed - Other Carrier')
+and sub_ctg not like '%(EX)' 
+and RECEIVED_DT between date('2018-01-01') and date('2018-12-31')
+and SRC_MEMBER_ID in ({airports*})
+                                 ", 
+                                  airports = src_member_ids ,
+                                  .con = conn)
+CTM <- dbSendQuery(conn,CTM)
+CTM = dbFetch(CTM)
+
+Greivances = glue::glue_sql("select MHK_GRIEV_INTRNL_ID,OCCUR_DTS,SRC_MEMBER_ID
+    from starstemp.msora_medhok_grievence  
+    where OCCUR_DTS between date('2018-01-01') and date('2018-12-31')
+    and src_member_id in ({airports*})", 
+                                  airports = src_member_ids ,
+                                  .con = conn)
+Greivances <- dbSendQuery(conn,Greivances)
+Greivances = dbFetch(Greivances)
+summary(Greivances)
+Greivances_ag = data.frame(table(Greivances$SRC_MEMBER_ID))
+colnames(Greivances_ag) = c("SRC_MEMBER_ID","Greivances_12 month")
+##13,417members have lab visits 
+Ag_data_19= merge(x = Ag_data_19, y = Greivances_ag, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19= filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+```
+
+
+**HPD Data**
+```{r}
+HPD = glue::glue_sql("SELECT ds.*
+FROM
+(
+SELECT varchar(INDIVIDUAL_ID) INDIVIDUAL_ID,varchar(SRC_MEMBER_ID) SRC_MEMBER_ID,
+MAX(case when DISEASE_CD = 'SKC' then ct  else 0 end) as Skin_Cancer,
+MAX(case when DISEASE_CD = 'HEP' then ct  else 0 end) as Hepatitis,
+MAX(case when DISEASE_CD = 'CHD' then ct  else 0 end) as Congential_Heart_Disease,
+MAX(case when DISEASE_CD = 'LUC' then ct  else 0 end) as Lung_Cancer,
+MAX(case when DISEASE_CD = 'NEU' then ct  else 0 end) as Neurosis,
+MAX(case when DISEASE_CD = 'AUT' then ct  else 0 end) as Autism,
+MAX(case when DISEASE_CD = 'ANX' then ct  else 0 end) as Anxiety,
+MAX(case when DISEASE_CD = 'STC' then ct  else 0 end) as Stomach_Cancer,
+MAX(case when DISEASE_CD = 'CFS' then ct  else 0 end) as Chronic_Fatigue_Syndrome,
+MAX(case when DISEASE_CD = 'ALC' then ct  else 0 end) as Alcoholism,
+MAX(case when DISEASE_CD = 'PRC' then ct  else 0 end) as Prostate_Cancer,
+MAX(case when DISEASE_CD = 'PVD' then ct  else 0 end) as Peripheral_Artery_Disease,
+MAX(case when DISEASE_CD = 'RHA' then ct  else 0 end) as Rheumatoid_Arthritis,
+MAX(case when DISEASE_CD = 'CHF' then ct  else 0 end) as Heart_Failure,
+MAX(case when DISEASE_CD = 'CHO' then ct  else 0 end) as Cholelithiasis_or_Cholecystitis,
+MAX(case when DISEASE_CD = 'CBD' then ct  else 0 end) as Cerebrovascular_Disease,
+MAX(case when DISEASE_CD = 'HCG' then ct  else 0 end) as Hypercoaguable_Syndrome,
+MAX(case when DISEASE_CD = 'MSX' then ct  else 0 end) as Metabolic_Syndrome,
+MAX(case when DISEASE_CD = 'PNC' then ct  else 0 end) as Pancreatic_Cancer,
+MAX(case when DISEASE_CD = 'PUD' then ct  else 0 end) as Peptic_Ulcer_Disease,
+MAX(case when DISEASE_CD = 'EPL' then ct  else 0 end) as Epilepsy,
+MAX(case when DISEASE_CD = 'OST' then ct  else 0 end) as Osteoarthritis,
+MAX(case when DISEASE_CD = 'EDT' then ct  else 0 end) as Endometriosis,
+MAX(case when DISEASE_CD = 'LVB' then ct  else 0 end) as Low_Vision_and_Blindness,
+MAX(case when DISEASE_CD = 'PER' then ct  else 0 end) as Periodontal_Disease,
+MAX(case when DISEASE_CD = 'CAN' then ct  else 0 end) as Other_Cancer,
+MAX(case when DISEASE_CD = 'CVC' then ct  else 0 end) as Cervical_Cancer,
+MAX(case when DISEASE_CD = 'CAT' then ct  else 0 end) as Cataract,
+MAX(case when DISEASE_CD = 'ADD' then ct  else 0 end) as Attention_Deficit_Disorder,
+MAX(case when DISEASE_CD = 'IDA' then ct  else 0 end) as Iron_Deficiency_Anemia,
+MAX(case when DISEASE_CD = 'BIP' then ct  else 0 end) as Bipolar,
+MAX(case when DISEASE_CD = 'MLM' then ct  else 0 end) as Malignant_Melanoma,
+MAX(case when DISEASE_CD = 'MOH' then ct  else 0 end) as Migraine_and_Other_Headaches,
+MAX(case when DISEASE_CD = 'AST' then ct  else 0 end) as Asthma,
+MAX(case when DISEASE_CD = 'IHD' then ct  else 0 end) as Ischemic_Heart_Disease,
+MAX(case when DISEASE_CD = 'SUM' then ct  else 0 end) as Member_Summary,
+MAX(case when DISEASE_CD = 'COC' then ct  else 0 end) as Colorectal_Cancer,
+MAX(case when DISEASE_CD = 'CRF' then ct  else 0 end) as Chronic_Renal_Failure,
+MAX(case when DISEASE_CD = 'SDO' then ct  else 0 end) as Substances_Related_Disorders,
+MAX(case when DISEASE_CD = 'BRC' then ct  else 0 end) as Breast_Cancer,
+MAX(case when DISEASE_CD = 'NGD' then ct  else 0 end) as Nonspecific_Gastritis_or_Dyspepsia,
+MAX(case when DISEASE_CD = 'EDO' then ct  else 0 end) as Eating_Disorders,
+MAX(case when DISEASE_CD = 'HDL' then ct  else 0 end) as HodgkinsDisease_or_Lymphoma,
+MAX(case when DISEASE_CD = 'DTD' then ct  else 0 end) as Diverticular_Disease,
+MAX(case when DISEASE_CD = 'PAR' then ct  else 0 end) as Parkinsons_Disease,
+MAX(case when DISEASE_CD = 'HEM' then ct  else 0 end) as Hemophilia_or_Congenital_Coagulopathies,
+MAX(case when DISEASE_CD = 'COP' then ct  else 0 end) as Chronic_Obstructive_Pulmonary_Disease,
+MAX(case when DISEASE_CD = 'CRO' then ct  else 0 end) as Inflammatory_Bowel_Disease,
+MAX(case when DISEASE_CD = 'ORC' then ct  else 0 end) as Oral_Cancer,
+MAX(case when DISEASE_CD = 'OVC' then ct  else 0 end) as Ovarian_Cancer,
+MAX(case when DISEASE_CD = 'FIB' then ct  else 0 end) as Fibromyalgia,
+MAX(case when DISEASE_CD = 'LBP' then ct  else 0 end) as Low_Back_Pain,
+MAX(case when DISEASE_CD = 'ESC' then ct  else 0 end) as Esophageal_Cancer,
+MAX(case when DISEASE_CD = 'LEU' then ct  else 0 end) as Leukemia_or_Myeloma,
+MAX(case when DISEASE_CD = 'HNC' then ct  else 0 end) as Head_or_NeckCancer,
+MAX(case when DISEASE_CD = 'DNS' then ct  else 0 end) as Downs_Syndrome,
+MAX(case when DISEASE_CD = 'VNA' then ct  else 0 end) as Ventricular_Arrhythmia,
+MAX(case when DISEASE_CD = 'MNP' then ct  else 0 end) as Menopause,
+MAX(case when DISEASE_CD = 'LYM' then ct  else 0 end) as Lyme_Disease,
+MAX(case when DISEASE_CD = 'LBW' then ct  else 0 end) as Maternal_Hist_of_Low_Birth_Weight_or_Preterm_Birth,
+MAX(case when DISEASE_CD = 'OBE' then ct  else 0 end) as Obesity,
+MAX(case when DISEASE_CD = 'GLC' then ct  else 0 end) as Glaucoma,
+MAX(case when DISEASE_CD = 'CTD' then ct  else 0 end) as Chronic_Thyroid_Disorders,
+MAX(case when DISEASE_CD = 'BNC' then ct  else 0 end) as Brain_Cancer,
+MAX(case when DISEASE_CD = 'BLC' then ct  else 0 end) as Bladder_Cancer,
+MAX(case when DISEASE_CD = 'SCA' then ct  else 0 end) as Sickle_Cell_Anemia,
+MAX(case when DISEASE_CD = 'MSS' then ct  else 0 end) as Multiple_Sclerosis,
+MAX(case when DISEASE_CD = 'ALG' then ct  else 0 end) as Allergy,
+MAX(case when DISEASE_CD = 'SLE' then ct  else 0 end) as Systemic_Lupus_Erythematosus,
+MAX(case when DISEASE_CD = 'PAN' then ct  else 0 end) as Pancreatitis,
+MAX(case when DISEASE_CD = 'PSY' then ct  else 0 end) as Psychoses,
+MAX(case when DISEASE_CD = 'CYS' then ct  else 0 end) as Cystic_Fibrosis,
+MAX(case when DISEASE_CD = 'ENC' then ct  else 0 end) as Endometrial_Cancer,
+MAX(case when DISEASE_CD = 'AFF' then ct  else 0 end) as Atrial_Fibrillation,
+MAX(case when DISEASE_CD = 'BPH' then ct  else 0 end) as Benign_Prostatic_Hypertrophy,
+MAX(case when DISEASE_CD = 'CDO' then ct  else 0 end) as ADHD_and_other_Childhood_Disruptive_Disorders,
+MAX(case when DISEASE_CD = 'KST' then ct  else 0 end) as Kidney_Stones,
+MAX(case when DISEASE_CD = 'OSP' then ct  else 0 end) as Osteoporosis,
+MAX(case when DISEASE_CD = 'HYC' then ct  else 0 end) as Hyperlipidemia,
+MAX(case when DISEASE_CD = 'OMD' then ct  else 0 end) as Otitis_Media,
+MAX(case when DISEASE_CD = 'PMC' then ct  else 0 end) as Psychiatric_Disorders_related_to_Med_Conditions,
+MAX(case when DISEASE_CD = 'DEP' then ct  else 0 end) as Depression,
+MAX(case when DISEASE_CD = 'FIF' then ct  else 0 end) as Female_Infertility,
+MAX(case when DISEASE_CD = 'HYP' then ct  else 0 end) as Hypertension,
+MAX(case when DISEASE_CD = 'PPD' then ct  else 0 end) as Post_Partum_BH_Disorder,
+MAX(case when DISEASE_CD = 'AID' then ct  else 0 end) as HIV_or_AIDS,
+MAX(case when DISEASE_CD = 'DEM' then ct  else 0 end) as Dementia,
+MAX(case when DISEASE_CD = 'DIA' then ct  else 0 end) as Diabetes_Mellitus
+FROM
+(
+SELECT a.*,varchar(s.SRC_MEMBER_ID) SRC_MEMBER_ID,1 as ct
+FROM HPD.INDIVIDUAL_DETAIL a
+INNER JOIN STARSTEMP.STARS_ANALYTICS_MBR_360 s on a.INDIVIDUAL_ID = s.MEMBER_ID and s.REPORTING_YEAR = 2018
+WHERE a.RECORD_TYPE_CD = '0' and src_member_id in ({airports*})
+)
+GROUP BY INDIVIDUAL_ID,SRC_MEMBER_ID
+) ds", 
+                                  airports = src_member_ids ,
+                                  .con = conn)
+HPD <- dbSendQuery(conn,HPD)
+HPD = dbFetch(HPD)
+summary(HPD)
+table(is.na(HPD$CONGENTIAL_HEART_DISEASE))
+names(HPD)
+HPD = subset(HPD, select = -c(1))
+Ag_data_19 = merge(x = Ag_data_19, y = HPD, by = ("SRC_MEMBER_ID"), all.x = TRUE)
+Ag_data_19 = filter(Ag_data_19,!duplicated(SRC_MEMBER_ID))
+names(Ag_data_19)
+```
+**Critical Diseases and other Grouping**
+```{r}
+Ag_data_19$Abdomen_Related_Disorder = rowSums(subset(Ag_data_19, select = c("CHOLELITHIASIS_OR_CHOLECYSTITIS","PEPTIC_ULCER_DISEASE","NONSPECIFIC_GASTRITIS_OR_DYSPEPSIA",
+  "EATING_DISORDERS","DIVERTICULAR_DISEASE","INFLAMMATORY_BOWEL_DISEASE","PANCREATITIS")))
+Ag_data_19$Allergy = Ag_data_19$ALLERGY
+Ag_data_19$Autoimmune_Disease = Ag_data_19$SYSTEMIC_LUPUS_ERYTHEMATOSUS
+
+Ag_data_19$Blood_Related_Disorder =  rowSums(subset(Ag_data_19, select =
+  c("HYPERCOAGUABLE_SYNDROME","IRON_DEFICIENCY_ANEMIA","HEMOPHILIA_OR_CONGENITAL_COAGULOPATHIES",
+  "SICKLE_CELL_ANEMIA")))
+Ag_data_19$Cancer = rowSums(subset(Ag_data_19, select =
+c("SKIN_CANCER","LUNG_CANCER","STOMACH_CANCER","PROSTATE_CANCER","PANCREATIC_CANCER",                         "OTHER_CANCER","CERVICAL_CANCER","MALIGNANT_MELANOMA","COLORECTAL_CANCER","BREAST_CANCER",
+                            "HODGKINSDISEASE_OR_LYMPHOMA",
+                            "ORAL_CANCER",
+                            "OVARIAN_CANCER",
+                            "ESOPHAGEAL_CANCER",
+                            "LEUKEMIA_OR_MYELOMA",
+                            "HEAD_OR_NECKCANCER",
+                            "BRAIN_CANCER",
+                            "BLADDER_CANCER",
+                            "ENDOMETRIAL_CANCER")))
+Ag_data_19$Dementia = Ag_data_19$DEMENTIA
+Ag_data_19$Diabetes = Ag_data_19$DIABETES_MELLITUS
+Ag_data_19$DENTAL = Ag_data_19$PERIODONTAL_DISEASE
+Ag_data_19$Ear = Ag_data_19$OTITIS_MEDIA
+Ag_data_19$Fatigue = Ag_data_19$CHRONIC_FATIGUE_SYNDROME
+Ag_data_19$Heart_Related_Disorder = rowSums(subset(Ag_data_19, select =
+  c("CONGENTIAL_HEART_DISEASE","METABOLIC_SYNDROME","ISCHEMIC_HEART_DISEASE","VENTRICULAR_ARRHYTHMIA","ATRIAL_FIBRILLATION")))
+
+Ag_data_19$Hepatitus = Ag_data_19$HEPATITIS
+Ag_data_19$Hiv = Ag_data_19$HIV_OR_AIDS
+Ag_data_19$Hyperlipidemia = Ag_data_19$HYPERLIPIDEMIA
+Ag_data_19$Hypertension = Ag_data_19$HYPERTENSION
+Ag_data_19$Lungs_Related_Disorder = rowSums(subset(Ag_data_19, select =
+  c("ASTHMA","CHRONIC_OBSTRUCTIVE_PULMONARY_DISEASE","CYSTIC_FIBROSIS")))
+
+Ag_data_19$Lyme_Disease = Ag_data_19$LYME_DISEASE
+Ag_data_19$Mental_Disorder = rowSums(subset(Ag_data_19, select =
+c("AUTISM","ANXIETY","ALCOHOLISM","EPILEPSY","ATTENTION_DEFICIT_DISORDER","BIPOLAR","DEPRESSION")))
+
+Ag_data_19$Neural = rowSums(subset(Ag_data_19, select =
+                                     c("NEUROSIS","CEREBROVASCULAR_DISEASE","MIGRAINE_AND_OTHER_HEADACHES","PARKINSONS_DISEASE",
+                                       "DOWNS_SYNDROME","MULTIPLE_SCLEROSIS",
+                                       "PSYCHOSES",
+                                       "ADHD_AND_OTHER_CHILDHOOD_DISRUPTIVE_DISORDERS")))
+
+Ag_data_19$Obesity = Ag_data_19$OBESITY
+Ag_data_19$Orthopedic = rowSums(subset(Ag_data_19, select =
+                                         c("RHEUMATOID_ARTHRITIS","OSTEOARTHRITIS","FIBROMYALGIA","LOW_BACK_PAIN","OSTEOPOROSIS")))
+
+Ag_data_19$Peripheral_Artery_Disease = Ag_data_19$PERIPHERAL_ARTERY_DISEASE
+Ag_data_19$Prostate = Ag_data_19$BENIGN_PROSTATIC_HYPERTROPHY
+Ag_data_19$Renal = rowSums(subset(Ag_data_19, select =
+                                    c("CHRONIC_RENAL_FAILURE","KIDNEY_STONES")))
+Ag_data_19$Reproductive = rowSums(subset(Ag_data_19, select =
+                                           c("ENDOMETRIOSIS","MENOPAUSE","MATERNAL_HIST_OF_LOW_BIRTH_WEIGHT_OR_PRETERM_BIRTH",
+                                             "FEMALE_INFERTILITY","POST_PARTUM_BH_DISORDER")))
+Ag_data_19$SUBSTANCES_RELATED_DISORDERS = rowSums(subset(Ag_data_19, select =
+                                                           c("SUBSTANCES_RELATED_DISORDERS",
+                                                             "PSYCHIATRIC_DISORDERS_RELATED_TO_MED_CONDITIONS")))
+
+Ag_data_19$Thyroid_disorder = Ag_data_19$CHRONIC_THYROID_DISORDERS
+Ag_data_19$Vision_Related_Disorder = rowSums(subset(Ag_data_19, select =
+                                                      c("LOW_VISION_AND_BLINDNESS",
+                                                        "CATARACT",
+                                                        "GLAUCOMA")))
+Ag_data_19$Critical = rowSums(subset(Ag_data_19, select =
+                                       c('BLADDER_CANCER',
+                                         'BRAIN_CANCER',
+                                         'BREAST_CANCER',
+                                         'CERVICAL_CANCER',
+                                         'CHRONIC_OBSTRUCTIVE_PULMONARY_DISEASE',
+                                         'CHRONIC_RENAL_FAILURE',
+                                         'COLORECTAL_CANCER',
+                                         'ENDOMETRIAL_CANCER',
+                                         'ESOPHAGEAL_CANCER',
+                                         'HEAD_OR_NECKCANCER',
+                                         'HEART_FAILURE',
+                                         'HIV_OR_AIDS',
+                                         'HODGKINSDISEASE_OR_LYMPHOMA',
+                                         'LEUKEMIA_OR_MYELOMA',
+                                         'LUNG_CANCER',
+                                         'MALIGNANT_MELANOMA',
+                                         'ORAL_CANCER',
+                                         'OTHER_CANCER',
+                                         'OVARIAN_CANCER',
+                                         'PANCREATIC_CANCER',
+                                         'PERIPHERAL_ARTERY_DISEASE',
+                                         'PROSTATE_CANCER',
+                                         'SKIN_CANCER')))
+
+Ag_data_19$Less_Critical = rowSums(subset(Ag_data_19, select =
+                                            c('ADHD_AND_OTHER_CHILDHOOD_DISRUPTIVE_DISORDERS',
+                                              'ALCOHOLISM',
+                                              'ANXIETY',
+                                              'ASTHMA',
+                                              'ATRIAL_FIBRILLATION',
+                                              'AUTISM',
+                                              'BIPOLAR',
+                                              'CEREBROVASCULAR_DISEASE',
+                                              'CONGENTIAL_HEART_DISEASE',
+                                              'DEMENTIA',
+                                              'DEPRESSION',
+                                              'DIABETES_MELLITUS',
+                                              'DOWNS_SYNDROME',
+                                              'EPILEPSY',
+                                              'FIBROMYALGIA',
+                                              'HEPATITIS',
+                                              'HYPERLIPIDEMIA',
+                                              'HYPERTENSION',
+                                              'ISCHEMIC_HEART_DISEASE',
+                                              'LOW_BACK_PAIN',
+                                              'NEUROSIS',
+                                              'OSTEOARTHRITIS',
+                                              'OSTEOPOROSIS',
+                                              'PARKINSONS_DISEASE',
+                                              'PSYCHOSES',
+                                              'RHEUMATOID_ARTHRITIS',
+                                              'SUBSTANCES_RELATED_DISORDERS',
+                                              'VENTRICULAR_ARRHYTHMIA')))
+i = 1
+for(i in 1:nrow(Ag_data_19)){ 
+Ag_data_19$High_Need_Group[i] = if_else(((Ag_data_19$Critical[i] >1)|(Ag_data_19$Less_Critical[i]>5)),1,0)
+}
+Ag_data_19_2 = Ag_data_19[, -which(names(Ag_data_19) %in% c("SKIN_CANCER",
+"HEPATITIS",
+"CONGENTIAL_HEART_DISEASE",
+"LUNG_CANCER",
+"NEUROSIS",
+"AUTISM",
+"ANXIETY",
+"STOMACH_CANCER",
+"CHRONIC_FATIGUE_SYNDROME",
+"ALCOHOLISM",
+"PROSTATE_CANCER",
+"PERIPHERAL_ARTERY_DISEASE",
+"RHEUMATOID_ARTHRITIS",
+"HEART_FAILURE",
+"CHOLELITHIASIS_OR_CHOLECYSTITIS",
+"CEREBROVASCULAR_DISEASE",
+"HYPERCOAGUABLE_SYNDROME",
+"METABOLIC_SYNDROME",
+"PANCREATIC_CANCER",
+"PEPTIC_ULCER_DISEASE",
+"EPILEPSY",
+"OSTEOARTHRITIS",
+"ENDOMETRIOSIS",
+"LOW_VISION_AND_BLINDNESS",
+"PERIODONTAL_DISEASE",
+"OTHER_CANCER",
+"CERVICAL_CANCER",
+"CATARACT",
+"ATTENTION_DEFICIT_DISORDER",
+"IRON_DEFICIENCY_ANEMIA",
+"BIPOLAR",
+"MALIGNANT_MELANOMA",
+"MIGRAINE_AND_OTHER_HEADACHES",
+"ASTHMA",
+"ISCHEMIC_HEART_DISEASE",
+"MEMBER_SUMMARY",
+"COLORECTAL_CANCER",
+"CHRONIC_RENAL_FAILURE",
+"SUBSTANCES_RELATED_DISORDERS",
+"BREAST_CANCER",
+"NONSPECIFIC_GASTRITIS_OR_DYSPEPSIA",
+"EATING_DISORDERS",
+"HODGKINSDISEASE_OR_LYMPHOMA",
+"DIVERTICULAR_DISEASE",
+"PARKINSONS_DISEASE",
+"HEMOPHILIA_OR_CONGENITAL_COAGULOPATHIES",
+"CHRONIC_OBSTRUCTIVE_PULMONARY_DISEASE",
+"INFLAMMATORY_BOWEL_DISEASE",
+"ORAL_CANCER",
+"OVARIAN_CANCER",
+"FIBROMYALGIA",
+"LOW_BACK_PAIN",
+"ESOPHAGEAL_CANCER",
+"LEUKEMIA_OR_MYELOMA",
+"HEAD_OR_NECKCANCER",
+"DOWNS_SYNDROME",
+"VENTRICULAR_ARRHYTHMIA",
+"MENOPAUSE",
+"LYME_DISEASE",
+"MATERNAL_HIST_OF_LOW_BIRTH_WEIGHT_OR_PRETERM_BIRTH",
+"OBESITY",
+"GLAUCOMA",
+"CHRONIC_THYROID_DISORDERS",
+"BRAIN_CANCER",
+"BLADDER_CANCER",
+"SICKLE_CELL_ANEMIA",
+"MULTIPLE_SCLEROSIS",
+"ALLERGY",
+"SYSTEMIC_LUPUS_ERYTHEMATOSUS",
+"PANCREATITIS",
+"PSYCHOSES",
+"CYSTIC_FIBROSIS",
+"ENDOMETRIAL_CANCER",
+"ATRIAL_FIBRILLATION",
+"BENIGN_PROSTATIC_HYPERTROPHY",
+"ADHD_AND_OTHER_CHILDHOOD_DISRUPTIVE_DISORDERS",
+"KIDNEY_STONES",
+"OSTEOPOROSIS",
+"HYPERLIPIDEMIA",
+"OTITIS_MEDIA",
+"PSYCHIATRIC_DISORDERS_RELATED_TO_MED_CONDITIONS",
+"DEPRESSION",
+"FEMALE_INFERTILITY",
+"HYPERTENSION",
+"POST_PARTUM_BH_DISORDER",
+"HIV_OR_AIDS",
+"DEMENTIA",
+"DIABETES_MELLITUS"))]
+names(Ag_data_19_2)
+
+```
+**Dual,Age,Gender,Tenure**
+```{r}
+#Needs to be replaced with data from Sales table. 
+library(haven)
+year2019_ivl_datadump <- read_sas("C:/Users/A425666/OneDrive - CVS Health/Code_Library/HRA_PredictiveModel/RA_PredictiveModel/Reassement_PredictiveModel/year2019_ivl_datadump.sas7bdat",NULL)
+
+##Sort by SRC_Member_ID, Eff_Date, Term_Date 
+year2019_ivl_datadump = year2019_ivl_datadump[with(year2019_ivl_datadump, rev(order(year2019_ivl_datadump$MEDICARE_NUMBER,year2019_ivl_datadump$EFF_Date,year2019_ivl_datadump$Term_Date))),]
+head(year2019_ivl_datadump)
+str(year2019_ivl_datadump$MEDICARE_NUMBER)
+year2019_ivl_datadump = filter(year2019_ivl_datadump,!duplicated(MEDICARE_NUMBER))
+#match with members in Ag_data_19
+names(year2019_ivl_datadump)
+colnames(year2019_ivl_datadump)[3] = "HICN_NBR" ## Matching by HICN number doesnt give good results. Need to use MEMBER ID in the sales table with the SRC_MEMBER_ID in the data file. 
+
+year2019_ivl_datadump_match = subset(year2019_ivl_datadump, select = c(4,7,14,38,39,68,88,93))
+names(year2019_ivl_datadump_match)
+str(year2019_ivl_datadump_match$Member_ID)
+library(stringi)
+library(stringr)
+year2019_ivl_datadump_match$Member_ID = str_remove(year2019_ivl_datadump_match$Member_ID, "[[:punct:]]")
+str(year2019_ivl_datadump_match$Member_ID)
+colnames(year2019_ivl_datadump_match)[1] = "SRC_MEMBER_ID"
+Ag_data_19_2 = merge(Ag_data_19_2,year2019_ivl_datadump_match, by = "SRC_MEMBER_ID", all.x = TRUE)
+names(Ag_data_19_2)
+##All matched 
+
+##Recode the Dual Status 
+str(Ag_data_19_2$Dual_Status)
+Ag_data_19_2$Dual_Status = as.factor(Ag_data_19_2$Dual_Status)
+levels(Ag_data_19_2$Dual_Status)
+levels(Ag_data_19_2$Dual_Status) = c("Non-Dual","Partial (QMB-Only)","Full (QMB-Plus)","Partial (SLMB-Only)",
+                                    "Full (SLMB-Plus)","Partial (QDWI)","Partial (QI)","Full (Non-QMB, -SLMB, -QDWI, -QI)","Other Full Dual")
+Ag_data_19_2$Dual_Status = as.character(Ag_data_19_2$Dual_Status)
+table(Ag_data_19_2$Dual_Status)
+
+```
+##Part-D Utilization##
+```{r}
+Rx_sql = glue_sql("SELECT M360.SRC_MEMBER_ID,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=1 THEN 1 ELSE 0 END) AS TIER_1_DRUG_COUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=1 THEN PAY_PAID_AMT ELSE 0 END) AS TIER_1_DRUG_AMOUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=2 THEN 1 ELSE 0 END) AS TIER_2_DRUG_COUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=2 THEN PAY_PAID_AMT ELSE 0 END) AS TIER_2_DRUG_AMOUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=3 THEN 1 ELSE 0 END) AS TIER_3_DRUG_COUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=3 THEN PAY_PAID_AMT ELSE 0 END) AS TIER_3_DRUG_AMOUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=4 THEN 1 ELSE 0 END) AS TIER_4_DRUG_COUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=4 THEN PAY_PAID_AMT ELSE 0 END) AS TIER_4_DRUG_AMOUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=5 THEN 1 ELSE 0 END) AS TIER_5_DRUG_COUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=5 THEN PAY_PAID_AMT ELSE 0 END) AS TIER_5_DRUG_AMOUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=6 THEN 1 ELSE 0 END) AS TIER_6_DRUG_COUNT_12month,
+SUM(CASE WHEN DRUG_NMRC_TIER_NBR=6 THEN PAY_PAID_AMT ELSE 0 END) AS TIER_6_DRUG_AMOUNT_12month,
+SUM(CL.PAY_PAID_AMT) AS AETNA_PAID_AMOUNT_12month, 
+SUM(CL.GROSS_MBR_RESP_AMT) AS MBR_PAID_AMOUNT_12month,
+COUNT(CL.CLAIM_REF_NBR) AS RX_CLAIM_COUNT_12month,
+COUNT(DISTINCT SUBSTR(CL.ADJUDICATED_GPI_CD,1,10)) AS DISTINCT_GPI_12month
+FROM STARSTEMP.STARS_ANALYTICS_MBR_360 M360 INNER JOIN IWH_D.RX_CLAIM_DTL CL
+ON M360.MEMBER_ID = CL.MEMBER_ID
+WHERE M360.REPORTING_YEAR = 2018 
+AND M360.MDCR_OFFER_TYP_CD IN ('MAPD','MA') AND 
+CL.DISP_DT BETWEEN DATE('2018-01-01') AND DATE('2018-12-31')
+AND CL.BUSINESS_LN_CD = 'ME'
+AND CL.CLM_LN_STATUS_CD='P'
+AND SRC_MEMBER_ID in ({airports*})
+GROUP BY M360.SRC_MEMBER_ID", 
+                     airports = src_member_ids,
+                     .con = conn)
+
+Rx <- dbSendQuery(conn,Rx_sql)
+Rx = dbFetch(Rx)
+
+names(Rx)
+colnames(Rx)[14] = "RX_AETNA_PAID_AMT_12month"
+colnames(Rx)[15] = "RX_MBR_PAID_AMT_12month"
+
+#Match with the Ag_data_19 
+summary(Rx)
+Ag_data_19_2 = merge(Ag_data_19_2,Rx, by = "SRC_MEMBER_ID", all.x = T)
+names(Ag_data_19_2)
+
+
+```
+
+##Hedis Data##
+```{r}
+hedis <- glue::glue_sql("Select mbr.SRC_MEMBER_ID,mbr.MEASURE_ID,
+mbr.NUMERATOR,mbr.DENOMINATOR , ref.MEASURE_DISPLAY_NM
+from STARSTEMP.STARS_HEDIS_MBR_DETAIL mbr
+left join starstemp.STARS_MEASURE_MASTER_REF ref 
+on mbr.MEASURE_ID = ref.MEASURE_ID and 
+mbr.REPORTING_YEAR = ref.REPORTING_YEAR
+where mbr.REPORTING_YEAR in (2018) and 
+ ref.MEASURE_ID in ('107110','999901','101603','102401',
+                    '999998','100104','100107','107107',
+                    '104201','108009','101201','107126',
+                    '107125','107127') and SRC_MEMBER_ID
+in ({airports*})", 
+                    airports = src_member_ids,
+                    .con = conn
+)
+
+hedis <- dbSendQuery(conn,hedis)
+
+hedis = dbFetch(hedis)
+
+hedis = hedis %>% distinct(SRC_MEMBER_ID,MEASURE_ID,DENOMINATOR, .keep_all = TRUE)
+
+denom = aggregate(hedis$DENOMINATOR, 
+          by = list(hedis$SRC_MEMBER_ID,hedis$MEASURE_ID,hedis$MEASURE_DISPLAY_NM), FUN = "sum")
+num = aggregate(hedis$NUMERATOR, 
+                  by = list(hedis$SRC_MEMBER_ID,hedis$MEASURE_ID, hedis$MEASURE_DISPLAY_NM), FUN = "sum")
+#num$MEASURE_ID = as.factor(as.character(num$MEASURE_ID))
+#levels(num$MEASURE_ID) = c()
+summary(denom)
+names(denom)
+colnames(denom) = c("SRC_MEMBER_ID","MEASURE_ID","MEASURE_NAME","Denominator")
+colnames(num) = c("SRC_MEMBER_ID","MEASURE_ID","MEASURE_NAME","Numerator")
+hedis_data = merge(num,denom, by = c("SRC_MEMBER_ID","MEASURE_ID","MEASURE_NAME"))
+###
+num = aggregate(Numerator ~ SRC_MEMBER_ID, data  = hedis_data, "sum")
+denom = aggregate(Denominator ~ SRC_MEMBER_ID, data  = hedis_data, "sum")
+
+
+hedis_ag_data = merge(num,denom, by = c("SRC_MEMBER_ID"))
+i = 1
+for(i in 1:nrow(hedis_ag_data)){
+ hedis_ag_data$PER_COM_MEASURE_ID_PY[i] = round((hedis_ag_data$Numerator[i]/hedis_ag_data$Denominator[i])*100,2)
+  }
+table(hedis_ag_data$PER_COM_MEASURE_ID_PY)
+
+
+#Match the aggregate tables by SRC_MEMBER_ID and MEASURE_ID
+
+i = 1
+for(i in 1:nrow(hedis_data)){
+  if (hedis_data$Denominator[i] == 0)
+    hedis_data$Numerator[i] = -1
+}
+##aggregate num and denom in the hedis_Data 
+
+hedis_data_1 = subset(hedis_data, select = -c(2,5))
+
+
+hedis_merged = merge(Ag_data_19_2,hedis_ag_data, by = ("SRC_MEMBER_ID"), all.x = T)
+
+library(reshape2)
+casted_data =dcast(hedis_data_1, SRC_MEMBER_ID~MEASURE_NAME)
+#hedis_reshaped = acast(hedis_data_1, SRC_MEMBER_ID ~ MEASURE_NAME,length)
+casted_data = data.frame(casted_data)
+casted_data[is.na(casted_data)] <- -1
+hedis_merged = merge(hedis_merged,casted_data, by = ("SRC_MEMBER_ID"), all.x = T)
+```
+
+
+**Letters Written and Valid Call Count**
+```{r}
+#setwd("C:/Users/A425666/OneDrive - CVS Health/Code_Library/HRA_PredictiveModel/RA_PredictiveModel/Reassement_PredictiveModel")
+library(readxl)
+X2018_CVTY_HRA_PartC_Detail_All_Analysis_01312019_F <- read_excel("Z:/Archive/HRA 2018/2018_CVTY_HRA_PartC_Detail_All_Analysis_01312019 F.xlsx",skip = 1)
+names(X2018_CVTY_HRA_PartC_Detail_All_Analysis_01312019_F)
+FL_LW_VC_cols = subset(X2018_CVTY_HRA_PartC_Detail_All_Analysis_01312019_F, select = c(4,5,50,51))
+FL_LW_VC_cols$Member_ID = as.character(FL_LW_VC_cols$Member_ID)
+FL_LW_VC_cols = filter(FL_LW_VC_cols,Member_ID != "")
+#80242763401_1 check id
+##Filter out _ character
+library(stringr)
+FL_LW_VC_cols$Member_ID =  str_sub(FL_LW_VC_cols$Member_ID,end = -3)
+#PA_FL$Member_ID = str_remove(PA_FL$Member_ID,"[*]")
+library(dplyr)
+FL_LW_VC_cols$Enrollment_Date = as.character(FL_LW_VC_cols$Enrollment_Date)
+FL_LW_VC_cols = FL_LW_VC_cols[with(FL_LW_VC_cols, rev(order(FL_LW_VC_cols$Enrollment_Date))),]
+FL_LW_VC_cols = filter(FL_LW_VC_cols,!duplicated(Member_ID))
+
+##Add these cols to hedis_merged data
+names(FL_LW_VC_cols)
+colnames(FL_LW_VC_cols)[1] = "SRC_MEMBER_ID"
+FL_LW_VC_cols = subset(FL_LW_VC_cols, select = -c(2))
+
+#Add PA data as well. 
+PA_Col_vars <- read.csv("C:/Users/A425666/OneDrive - CVS Health/Code_Library/HRA_PredictiveModel/RA_PredictiveModel/Reassement_PredictiveModel/From ILS_HAPA Part C 2.1.2019 Final.csv")
+names(PA_Col_vars)
+PA_LW_VC_cols = subset(PA_Col_vars, select = 
+                         c(4,6,18:19))
+PA_LW_VC_cols$HRA.Member.ID = as.character(PA_LW_VC_cols$HRA.Member.ID)
+PA_LW_VC_cols = filter(PA_LW_VC_cols,HRA.Member.ID != "")
+
+library(stringr)
+PA_LW_VC_cols$HRA.Member.ID =  str_sub(PA_LW_VC_cols$HRA.Member.ID,end = -3)
+#PA_FL$Member_ID = str_remove(PA_FL$Member_ID,"[*]")
+library(dplyr)
+PA_LW_VC_cols$Enrollment.Effective.Date = as.character(PA_LW_VC_cols$Enrollment.Effective.Date)
+i = 1
+str(PA_LW_VC_cols$Annual_Unreachable_Letter_Date)
+PA_LW_VC_cols$Annual_Unreachable_Letter_Date = as.character(PA_LW_VC_cols$Annual_Unreachable_Letter_Date)
+for(i in 1:nrow(PA_LW_VC_cols)){
+  PA_LW_VC_cols$Letters.Written[i] =  if_else(PA_LW_VC_cols$Annual_Unreachable_Letter_Date[i] == "",0,1)
+}
+
+PA_LW_VC_cols = PA_LW_VC_cols[with(PA_LW_VC_cols, rev(order(PA_LW_VC_cols$Enrollment.Effective.Date))),]
+PA_LW_VC_cols = filter(PA_LW_VC_cols,!duplicated(HRA.Member.ID))
+
+##Add these cols to hedis_merged data
+names(PA_LW_VC_cols)
+colnames(PA_LW_VC_cols)[1] = "SRC_MEMBER_ID"
+PA_LW_VC_cols = subset(PA_LW_VC_cols, select = -c(2,4))
+names(PA_LW_VC_cols)
+names(FL_LW_VC_cols)
+FL_LW_VC_cols$Letters.Written = FL_LW_VC_cols$`Letters Written`
+FL_LW_VC_cols = subset(FL_LW_VC_cols, select = -c(2))
+colnames(PA_LW_VC_cols) = c("SRC_MEMBER_ID","Valid.Call.count","Letters.Written")
+colnames(FL_LW_VC_cols) = c("SRC_MEMBER_ID","Valid.Call.count","Letters.Written")
+PA_FL = rbind(FL_LW_VC_cols,PA_LW_VC_cols)
+
+#VA data 
+setwd("C:/Users/A425666/OneDrive - CVS Health/Code_Library/HRA_PredictiveModel/RA_PredictiveModel/Scoring_2020")
+VA_2018 <- read_excel("Medicare Part C Plan Reporting Section 13 DSNP 2018 ak 04_30_2019.xlsx")
+i = 1
+for(i in 1:nrow(VA_2018)){
+  VA_2018$Reminder_Letter_Initial[i] = if_else(!is.na(VA_2018$Initial_Unreachable_Letter_Date[i]),
+                                                   1,0)
+  VA_2018$Reminder_Letter_Annual[i] = if_else(!is.na(VA_2018$Annual_Unreachable_Letter_Date[i]),
+                                                  1,0)  
+  VA_2018$Initial_Unreachable_Phone_Date1_v[i] = if_else(!is.na(VA_2018$Initial_Unreachable_Phone_Date1[i]),1,0) 
+  VA_2018$Initial_Unreachable_Phone_Date2_v[i] = if_else(!is.na(VA_2018$Initial_Unreachable_Phone_Date2[i]),1,0)
+  VA_2018$Initial_Unreachable_Phone_Date3_v[i] = if_else(!is.na(VA_2018$Initial_Unreachable_Phone_Date3[i]),1,0)
+  VA_2018$Annual_Unreachable_Phone_Date1_v[i] = if_else(!is.na(VA_2018$Annual_Unreachable_Phone_Date1[i]),1,0) 
+  VA_2018$Annual_Unreachable_Phone_Date2_v[i] = if_else(!is.na(VA_2018$Annual_Unreachable_Phone_Date2[i]),1,0)
+  VA_2018$Annual_Unreachable_Phone_Date3_v[i] = if_else(!is.na(VA_2018$Annual_Unreachable_Phone_Date3[i]),1,0)
+}
+str(VA_2018)
+#Calculate Letters written and Valid Call Counts. 
+i = 1
+library(dplyr)
+for(i in 1:nrow(VA_2018)){
+  VA_2018$Reminder_Letters[i] = sum(VA_2018$Reminder_Letter_Initial[i],VA_2018$Reminder_Letter_Annual[i])  
+  VA_2018$Reminder_Calls[i] = sum(VA_2018$Initial_Unreachable_Phone_Date1_v[i],
+                                      VA_2018$Initial_Unreachable_Phone_Date2_v[i],
+                                      VA_2018$Initial_Unreachable_Phone_Date3_v[i],
+                                      VA_2018$Annual_Unreachable_Phone_Date1_v[i],
+                                      VA_2018$Annual_Unreachable_Phone_Date2_v[i],
+                                      VA_2018$Annual_Unreachable_Phone_Date3_v[i])
+  
+}
+
+#Bind PA_FL with VA_2018
+names(PA_FL)
+names(VA_2018)
+colnames(VA_2018)[3] = "SRC_MEMBER_ID"
+colnames(PA_FL) = c("SRC_MEMBER_ID","Reminder_Calls","Reminder_Letters")
+VA_2018_1 = subset(VA_2018, select = c(3,31,32))
+names(VA_2018_1)
+str(VA_2018_1)
+str(PA_FL)
+VA_2018_2 = data.frame(VA_2018_1$SRC_MEMBER_ID,VA_2018_1$Reminder_Calls,VA_2018_1$Reminder_Letters)
+names(VA_2018_2)
+colnames(VA_2018_2) = c("SRC_MEMBER_ID","Reminder_Calls","Reminder_Letters")
+#library(gtools)
+LW_LC = rbind(VA_2018_2,PA_FL)
+names(LW_LC)
+View(LW_LC)
+hedis_merged = merge(hedis_merged,LW_LC, by = "SRC_MEMBER_ID", all.x = T)
+summary(hedis_merged)
+
+```
+
+
+**Add Rx measures to the data **
+```{r}
+#member_ids = as.character(hedis_merged$MEMBER_ID)
+#member_ids = data.frame(member_ids)
+#member_ids = filter(member_ids,!is.na(member_ids))
+Rx_measures = glue::glue_sql("select ref.SRC_MEMBER_ID,ref.MEASURE_ID,
+ref.NUMERATOR,ref.DENOMINATOR ,ref.ADHERENCE_RATE
+from starstemp.STARS_PARTD_MBR_DETAIL_all ref
+where ref.REPORTING_YEAR in (2018)  and ref.MEASURE_ID in ('201181','201182','201180','201184','201183') and 
+ref.SRC_MEMBER_ID in ({airports*})", 
+                    airports = src_member_ids,
+                    .con = conn
+)
+Rx_measures <- dbSendQuery(conn,Rx_measures)
+
+Rx_measures = dbFetch(Rx_measures)
+library(dplyr)
+Rx_measures = Rx_measures %>% distinct(SRC_MEMBER_ID,MEASURE_ID,NUMERATOR,DENOMINATOR, .keep_all = TRUE)
+summary(Rx_measures)
+
+##Get Rx table name from Chiru  - received
+Rx_measures$MEASURE_ID = as.factor(Rx_measures$MEASURE_ID)
+levels(Rx_measures$MEASURE_ID)
+levels(Rx_measures$MEASURE_ID) = c("Statin Adherence","ACEI/ARB Adherence","Diabetes Adherence")
+
+##Match with the hedis_merged_Data. 
+#hedis_merged_1 = merge(hedis_merged,Rx_measures, by = ("SRC_MEMBER_ID"), all.x = T)
+
+library(reshape2)
+casted_data =dcast(Rx_measures, SRC_MEMBER_ID~MEASURE_ID)
+#hedis_reshaped = acast(hedis_data_1, SRC_MEMBER_ID ~ MEASURE_NAME,length)
+casted_data = data.frame(casted_data)
+casted_data[is.na(casted_data)] <- -0.99
+#casted_data = casted_data %>% distinct(SRC_MEMBER_ID, .keep_all = TRUE)
+summary(casted_data)
+#colnames(casted_data) = c("SRC_MEMBER_ID","Statin Adherence","ACEI/ARB Adherence","Diabetes Adherence")
+hedis_merged = merge(hedis_merged,casted_data, by = ("SRC_MEMBER_ID"), all.x = T)
+```
+
+
+##Create two new features: 
+1. MostRecentR_Completed
+2. I_Completed
+
+```{r}
+#We need max_hra_before_18, Year_E,I_completed_date
+names(hedis_merged)
+mbr_hra_2019_final_withmaxhra <- read.csv("C:/Users/A425666/OneDrive - CVS Health/Code_Library/HRA_PredictiveModel/RA_PredictiveModel/Scoring_2020/mbr_hra_2019_final_withmaxhra.csv")
+#mbr_hra_2019_final_withmaxhra$SRC_Member_ID = as.character(mbr_hra_2019_final_withmaxhra$SRC_Member_ID)
+#names(mbr_hra_2019_final_withmaxhra)
+names(hedis_merged)
+#new_vars = subset(mbr_hra_2019_final_withmaxhra, select = c(2,3,9,13))
+new_vars = subset(hedis_merged, select = c(1,3,11,15))
+names(new_vars)
+str(new_vars)
+new_vars$EFF_Date = as.Date(as.character(new_vars$EFF_Date), format = "%Y-%m-%d")
+library(tidyr)
+new_vars = separate(data = new_vars, col = EFF_Date, into = c("YEAR_E", "MONTH_E","DAY_E"), sep = "-")
+names(new_vars)
+new_vars$I_completed_date = as.Date(as.character(new_vars$I_completed_date), format = "%Y-%m-%d")
+new_vars$I_completed_date[new_vars$I_completed_date == "1970-01-01"] <- NA
+new_vars$MOST_RECENT_HRA_COMPLETE_DATE[new_vars$MOST_RECENT_HRA_COMPLETE_DATE == "1970-01-01"] <- NA
+names(new_vars)
+new_vars = subset(new_vars, select = c(1,2,5,6))
+#Match it with hedis_merged_1
+#names(hedis_merged_1)
+#colnames(new_vars)[1] = "SRC_MEMBER_ID"
+#hedis_merged_1 = merge(hedis_merged_1,new_vars, by = "SRC_MEMBER_ID", all.x = T)
+i = 1
+str(new_vars$I_completed_date)
+library(dplyr)
+
+##Reassessment variable 
+i = 1
+for(i in 1:nrow(new_vars)){
+ new_vars$MostRecentR_completed[i] = if_else(!is.na(new_vars$MOST_RECENT_HRA_COMPLETE_DATE[i]),
+                              "1",if_else((is.na(new_vars$MOST_RECENT_HRA_COMPLETE_DATE[i]) && 
+                                            (new_vars$YEAR_E[i] < 2019)),"0","-1"))
+                                                                                }
+table(new_vars$MostRecentR_completed)
+
+new_vars_na = filter(new_vars,is.na(MostRecentR_completed))
+new_vars$I_completed_date = as.character(new_vars$I_completed_date)
+i = 1
+for(i in 1:nrow(new_vars)){
+ new_vars$I_completed[i] = if_else(!is.na(new_vars$I_completed_date[i]),1,0) }
+##Add to dataset 
+names(new_vars)
+new_vars = subset(new_vars, select = c(1,5,6))
+hedis_merged_1 = merge(hedis_merged,new_vars, by = "SRC_MEMBER_ID", all.x = T)
+str(hedis_merged)
+colnames(hedis_merged_1)[118] = "Initial_Completed"
+hedis_merged_1$Initial_Completed = as.integer(hedis_merged_1$Initial_Completed)
+hedis_merged_1$MostRecentR_completed = as.integer(hedis_merged_1$MostRecentR_completed)
+
+
+```
+
+
+#Number of HRA's taken so far 
+```{r}
+names(hedis_merged_1)
+HRA_dates = subset(hedis_merged_1, select = c(1,16:29))
+library(dplyr)
+HRA_dates = HRA_dates %>% mutate_if(is.factor, as.character)
+str(HRA_dates)
+str(HRA_dates$HRA1)
+HRA_dates[, 2:15][HRA_dates[, 2:15] == ""] <- 0
+HRA_dates[, 2:15][HRA_dates[, 2:15] != 0] <- 1
+table(HRA_dates$HRA1)
+HRA_dates[, 2:15] <- sapply(HRA_dates[, 2:15], as.numeric)
+#rowsum from hra1 to hra 14
+HRA_dates$nHRAs = rowSums(HRA_dates[,c(2:15)], na.rm=TRUE)
+names(HRA_dates)
+HRA_dates = subset(HRA_dates, select = c(1,16))
+hedis_merged_1 = merge(hedis_merged_1, HRA_dates, by = c("SRC_MEMBER_ID"), all.x = T)
+
+```
+
+#Data Cleaning 
+```{r}
+names(hedis_merged_1)
+summary(hedis_merged)
+hedis_merged_2 = hedis_merged_1
+#Remove PAR CLAIMS, NON-PAR CLAIMS, CRITICAL, LESS CRITICAL, LIS,PCP NAME, (wait on this one -DRUG AMOUNTS)
+hedis_merged_1 = hedis_merged_1[, -which(names(hedis_merged_1) %in% c("PAR_CLAIMS_6 month","PAR_CLAIMS_12 month",
+                                    "NONPAR_CLAIMS_6 month","NONPAR_CLAIMS_12 month","Critical","Less_Critical","LIS_Flag","PCP_Name"))]
+
+names(hedis_merged_1)     
+
+summary(hedis_merged_1)
+
+#For variables from LAB.VISITS to GREIVANCES, NA's need to be replaced with 0 since the member didnt have any experience for that feature. 
+hedis_merged_1[, 30:42][is.na(hedis_merged_1[, 30:42])] <- 0
+
+#For Tenure, LIS_Flag, Age, Gender,PCP, and Dual Status, there are 61 NA's (84 for LIS)
+#Remove those NA's. Use Tenure for remove them. 
+library(dplyr)
+hedis_merged_1 = filter(hedis_merged_1,!is.na(Tenure_Aetna_Mths))
+
+##For conditions starting from col 43 to 70, NA can be imputed with 0 
+hedis_merged_1[, 43:70][is.na(hedis_merged_1[, 43:70])] <- 0
+
+#For Rx columns as well ,NA can be replaced with 0
+names(hedis_merged_1)
+hedis_merged_1[, 76:91][is.na(hedis_merged_1[, 76:91])] <- 0
+
+#For HEDIS related columns- Numerator and Denominator,  NA can be replaced with 0
+hedis_merged_1[, 92:93][is.na(hedis_merged_1[, 92:93])] <- 0
+
+#For hedis %,  NA can be replaced with -99
+hedis_merged_1[, 94][is.na(hedis_merged_1[, 94])] <- 0
+
+#For HEDIS measures, NA can be replaced with -1
+hedis_merged_1[, 95:107][is.na(hedis_merged_1[, 95:107])] <- -1
+
+#For Letter Written and Valid Call Count
+hedis_merged_1[, 108:109][is.na(hedis_merged_1[, 108:109])] <- 0
+names(hedis_merged_1)
+
+#For Rx adherence measures
+hedis_merged_1[, 110:112][is.na(hedis_merged_1[, 110:112])] <- -1
+names(hedis_merged_1)
+summary(hedis_merged_1)
+
+#Not Eligible, replace with -1, 
+#Keep consistent measures between 2018-2019
+
+#Relabel -99 to -1 for HEDIS measures and RX adherence to -1. 
+# names(hedis_merged)
+# hedis_merged_1 = hedis_merged
+# summary(hedis_merged)
+# hedis_merged_1[, 78:90][(hedis_merged[, 78:90]) == -99] <- -1 # There aren't any values with -99. This is a double check
+# hedis_merged_1[,93:95][(hedis_merged[, 93:95]) == -0.99] <- -1
+# summary(hedis_merged_1)
+```
+
+##Swap the labels to 1 as Non-Compliant, 0 as Compliant. Also rename target variable to HRA.Compliance
+```{r}
+hedis_merged_1_before_swap = hedis_merged_1
+names(hedis_merged_1)
+#this file has all variables. Save it as Train_@019_Data_newlabels_0621
+getwd()
+write.csv(hedis_merged_1,"Train_2019_Data_newlabels_0621.csv")
+colnames(hedis_merged_1)[13] = "HRA.Compliance"
+
+hedis_merged_1$HRA.Compliance = as.factor(hedis_merged_1$HRA.Compliance)
+levels(hedis_merged_1$HRA.Compliance)
+levels(hedis_merged_1$HRA.Compliance) = c("Non-Compliant","Compliant")
+
+#Convert words to 1,0 now 
+levels(hedis_merged_1$HRA.Compliance)
+levels(hedis_merged_1$HRA.Compliance) = c("1","0")
+hedis_merged_1$HRA.Compliance = as.integer(as.character(hedis_merged_1$HRA.Compliance))
+str(hedis_merged_1)
+
+
+```
+
+
+#Train and Test Split 
+
+#Run Model using hedis_merged_1_for_model, the trained data for 2019
+```{r}
+#Split into Train and Test 
+library(caret)
+set.seed(123)
+
+#Get Sales channel from the ivl_dataset 
+names(hedis_merged_1)
+hedis_merged_1_for_model = subset(hedis_merged_1, select = c(13,30:73,75:115))
+names(hedis_merged_1_for_model)
+#colnames(hedis_merged_1_for_model)[81] = "I_Completed"
+
+trainIndex <- createDataPartition(hedis_merged_1_for_model$HRA.Compliance, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+head(trainIndex)
+Train <- hedis_merged_1_for_model[ trainIndex,]
+Test  <- hedis_merged_1_for_model[-trainIndex,]
+names(Train)
+names(Test)
+
+##
+names(Train) <- make.names(names(Train), allow_ = FALSE)
+```
+
+#Run rf model on the data 
+```{r}
+i = 1
+hyper_grid <- expand.grid(
+  mtry       = seq(1:15),
+  node_size  = seq(3, 9, by = 2),
+  sampe_size = c(.55, .65, .75, .85),
+  OOB_RMSE  = 0
+)
+
+i = 1
+library(ranger)
+names(Train)
+for(i in 1:nrow(hyper_grid)) {
+rf_model_2019_seconditeration <- ranger(
+    formula         = HRA.Compliance ~ ., 
+    data            = Train, 
+    num.trees       = 500,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$node_size[i],
+    sample.fraction = hyper_grid$sampe_size[i],
+    
+    seed            = 123
+  )
+}
+
+##Save the model
+saveRDS(rf_model_2019_seconditeration, file = "rf_model_trained2019_scoring2020_2_0621.rds")
+
+
+#For analysis 
+#write.csv(hedis_merged_1_for_tableau,"Futher_HRA_Analysis_data.csv")
+#getwd()
+```
+

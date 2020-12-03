@@ -1,0 +1,47 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This notebook is to get snp_measures 
+
+```{r}
+snp_c = dbGetQuery(conn,"select * from starstemp.stars_snp_dashboard_summary where measure_nm in ('Breast Cancer Screening') and 	CMS_CNTRCT_NBR = ('H3959') AND DASHBOARD_YEAR IN (2022) ")
+snp = dbGetQuery(conn,"select distinct SUMMARY_TYPE from starstemp.stars_snp_dashboard_summary where dashboard_year in (2021)")
+snp = dbGetQuery(conn,"select dashboard_year,ccyymm_load_date,summary_type,snp_ind,domain,MEASURE_NM,RATED_MEASURES,TREND_IND,sum(NUM) as Numerator,sum(DEN)
+as Denominator,sum(ENROLLMENT) as Enrollment,sum(PYPIT_NUM) as PY_NUM,sum(PYPIT_DEN) as PY_DEN,   FORECAST_WEIGHT ,STAR_5_CUTPOINT, STAR_4_CUTPOINT ,STAR_3_CUTPOINT, STAR_2_CUTPOINT  from starstemp.stars_snp_dashboard_summary  
+                 where DASHBOARD_YEAR IN (2022,2021) 
+                 AND CCYYMM_LOAD_DATE IN (202008,201908) 
+                 AND SUMMARY_TYPE IN ('Measure')
+                 and rated_measures = 1
+                 AND domain in ('HEDIS','Ops','PatientSafety')
+                 group by dashboard_year,ccyymm_load_date,summary_type,TREND_IND,snp_ind,domain,MEASURE_NM,RATED_MEASURES,FORECAST_WEIGHT, STAR_5_CUTPOINT, STAR_4_CUTPOINT ,STAR_3_CUTPOINT ,STAR_2_CUTPOINT")
+
+write.csv(snp,"starmeasureperf_values.csv")
+from starstemp.stars_snp_dashboard_summary_base
+
+#Star Rating:
+star_rating= dbGetQuery(conn,"select CMS_CNTRCT_NBR,SNP_IND, MEASURE_ID, MEASURE_NM,SUMMARY_TYPE,STAR,FORECAST_WEIGHT from starstemp.stars_snp_dashboard_summary where dashboard_year in (2022)
+                        and rated_measures = 1
+                        and SUMMARY_TYPE IN ('Measure')
+                        and domain in ('HEDIS','Ops','PatientSafety')
+                        group by CMS_CNTRCT_NBR,SNP_IND, MEASURE_ID, MEASURE_NM,SUMMARY_TYPE,STAR,FORECAST_WEIGHT")
+write.csv(star_rating,"Star_Rating_BY_CONTRACT.csv")
+
+
+star_rating_prev = dbGetQuery(conn,"select CMS_CNTRCT_NBR,SNP_IND, MEASURE_ID, MEASURE_NM,SUMMARY_TYPE,STAR,FORECAST_WEIGHT from starstemp.stars_snp_dashboard_summary_base where dashboard_year in (2021)
+                        and rated_measures = 1
+                        and CCYYMM_LOAD_DATE IN (201908)
+                        and SUMMARY_TYPE IN ('Measure')
+                        and domain in ('HEDIS','Ops','PatientSafety')
+                        group by CMS_CNTRCT_NBR,SNP_IND, MEASURE_ID, MEASURE_NM,SUMMARY_TYPE,STAR,FORECAST_WEIGHT")
+write.csv(star_rating,"Star_Rating.csv")
+write.csv(star_rating_prev,"Star_Rating_Prev.csv")
+star_rating = filter(star_rating$SUMMARY_TYPE == "")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
